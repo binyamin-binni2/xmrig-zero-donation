@@ -1,134 +1,102 @@
 name: Build XMRig + Release
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
+  push:
+    branches: [main]
 
 jobs:
-  build-linux:
-    name: Build for Linux
+  build:
     runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        target: [linux, windows, android]
+
+    env:
+      XMRIG_VERSION: 6.24.0
+
     steps:
-      - uses: actions/checkout@v4
+    - name: Checkout Repo
+      uses: actions/checkout@v4
 
-      - name: Install Linux dependencies
-        run: |
-          sudo apt update
-          sudo apt install -y build-essential cmake hwloc libhwloc-dev libuv1-dev libssl-dev git
+    - name: Install Dependencies (Linux + Cross)
+      run: |
+        sudo apt update
+        sudo apt install -y cmake build-essential git \
+          libhwloc-dev libssl-dev libuv1-dev \
+          mingw-w64 g++-mingw-w64 gcc-multilib g++-multilib \
+          libc6-dev-i386 zip unzip
 
-      - name: Build XMRig
-        run: |
-          mkdir -p xmrig/build
-          cd xmrig/build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
-          cmake --build .
+    - name: Install Android NDK
+      if: matrix.target == 'android'
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r27
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xmrig-linux
-          path: xmrig/build/xmrig
+    - name: Clone XMRig
+      run: |
+        git clone --recursive https://github.com/xmrig/xmrig.git
 
-  build-windows:
-    name: Build for Windows (x64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    - name: Clone and Patch libuv for Android
+      if: matrix.target == 'android'
+      run: |
+        git clone https://github.com/libuv/libuv.git
+        cd libuv
+        sed -i '1i #undef HAVE_IFADDRS_H' src/unix/tcp.c
 
-      - name: Install MinGW and deps
-        run: |
-          sudo apt update
-          sudo apt install -y cmake ninja-build g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64 git autoconf libtool
+    - name: Build libuv (Android)
+      if: matrix.target == 'android'
+      run: |
+        mkdir -p libuv/build && cd libuv/build
+        cmake .. \
+          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_PLATFORM=android-21 \
+          -DCMAKE_BUILD_TYPE=Release
+        cmake --build .
 
-      - name: Build libuv for Windows
-        run: |
-          git clone https://github.com/libuv/libuv.git
-          cd libuv
-          sh autogen.sh
-          ./configure --host=x86_64-w64-mingw32 --prefix=$PWD/build-mingw CC=x86_64-w64-mingw32-gcc
-          make -j$(nproc)
-          make install
+    - name: Build XMRig (Linux)
+      if: matrix.target == 'linux'
+      run: |
+        mkdir -p xmrig/build && cd xmrig/build
+        cmake .. -DCMAKE_BUILD_TYPE=Release
+        cmake --build .
+        strip xmrig
+        zip -j ../../xmrig-linux.zip xmrig
 
-      - name: Build XMRig for Windows
-        run: |
-          mkdir -p xmrig/build
-          cd xmrig/build
-          cmake .. \
-            -DCMAKE_SYSTEM_NAME=Windows \
-            -DCMAKE_SYSTEM_PROCESSOR=x86_64 \
-            -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
-            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DUV_INCLUDE_DIR=../../libuv/include \
-            -DUV_LIBRARY=../../libuv/build-mingw/lib/libuv.a
-          cmake --build .
+    - name: Build XMRig (Windows)
+      if: matrix.target == 'windows'
+      run: |
+        mkdir -p xmrig/build && cd xmrig/build
+        cmake .. -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_SYSTEM_NAME=Windows \
+          -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+          -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+          -DWITH_HWLOC=OFF
+        cmake --build .
+        zip -j ../../xmrig-windows.zip xmrig.exe
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xmrig-windows.exe
-          path: xmrig/build/xmrig.exe
+    - name: Build XMRig (Android)
+      if: matrix.target == 'android'
+      run: |
+        mkdir -p xmrig/build && cd xmrig/build
+        cmake .. \
+          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=arm64-v8a \
+          -DANDROID_PLATFORM=android-21 \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DLibUV_ROOT=../../libuv/build
+        cmake --build .
+        zip -j ../../xmrig-android.zip xmrig
 
-  build-android:
-    name: Build for Android (arm64)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r27c
-
-      - name: Build libuv for Android (arm64)
-        run: |
-          git clone https://github.com/libuv/libuv.git
-          cd libuv
-          mkdir build-android && cd build-android
-          cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-21 \
-            -DCMAKE_BUILD_TYPE=Release
-          cmake --build .
-
-      - name: Build XMRig for Android
-        run: |
-          mkdir -p xmrig/build
-          cd xmrig/build
-          cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-21 \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DUV_INCLUDE_DIR=../../libuv/include \
-            -DUV_LIBRARY=../../libuv/build-android/libuv.a
-          cmake --build .
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: xmrig-android
-          path: xmrig/build/xmrig
-
-  release:
-    name: Upload to GitHub Releases
-    needs: [build-linux, build-windows, build-android]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-
-      - name: Rename and package
-        run: |
-          mkdir -p release
-          mv dist/xmrig-linux/xmrig release/xmrig-linux
-          mv dist/xmrig-windows.exe/xmrig.exe release/xmrig-windows.exe
-          mv dist/xmrig-android/xmrig release/xmrig-android
-
-      - name: Upload release to GitHub
-        uses: softprops/action-gh-release@v2
-        with:
-          files: release/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Upload Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: v${{ env.XMRIG_VERSION }}
+        files: |
+          xmrig-linux.zip
+          xmrig-windows.zip
+          xmrig-android.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
