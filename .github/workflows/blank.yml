@@ -3,77 +3,112 @@ name: Build XMRig + Release
 on:
   push:
     tags:
-      - 'v*.*.*'
-  workflow_dispatch:
+      - 'v*'         # Only builds when you push a version tag like v6.24.0
+  workflow_dispatch:  # Manual build trigger
 
 jobs:
-  build:
+  build-linux:
+    name: Build Linux (x86_64)
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        platform: [linux, windows, android]
-
     steps:
-      - name: 📦 Clone Official XMRig
+      - name: Clone XMRig
+        run: git clone https://github.com/xmrig/xmrig.git
+
+      - name: Apply Custom Changes
         run: |
-          git clone --depth=1 https://github.com/xmrig/xmrig.git
           cd xmrig
-          echo "// 🔧 You can modify source here if needed"
-          # Example: change donation address or patch code
-          # sed -i 's/donate.v2.xmrig.com/your.donation.pool/' src/net/strategies/DonateStrategy.cpp
+          # Modify donation logic or anything else here
+          # e.g., sed -i 's/donate\.xmrig\.com/your.pool.com/' src/.../*.cpp
 
-      - name: 🔧 Install Dependencies
-        if: matrix.platform != 'android'
+      - name: Install Dependencies
+        run: sudo apt update && sudo apt install -y cmake build-essential libssl-dev libuv1-dev
+
+      - name: Build
         run: |
-          sudo apt update
-          sudo apt install -y build-essential cmake libssl-dev libuv1-dev mingw-w64
+          mkdir -p xmrig/build && cd xmrig/build
+          cmake .. -DWITH_HWLOC=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --parallel
 
-      - name: 📱 Set Up Android NDK
-        if: matrix.platform == 'android'
+      - name: Upload Linux Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: xmrig-linux
+          path: xmrig/build/xmrig
+
+  build-windows:
+    name: Build Windows (x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone XMRig
+        run: git clone https://github.com/xmrig/xmrig.git
+
+      - name: Install MinGW
+        run: sudo apt update && sudo apt install -y mingw-w64 cmake
+
+      - name: Build
+        run: |
+          mkdir -p xmrig/build && cd xmrig/build
+          cmake .. -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
+                   -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ -DWITH_HWLOC=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build . --parallel
+
+      - name: Upload Windows Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: xmrig-windows
+          path: xmrig/build/xmrig.exe
+
+  build-android:
+    name: Build Android (arm64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone XMRig
+        run: git clone https://github.com/xmrig/xmrig.git
+
+      - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r25c
+          ndk-version: r27b
+          add-to-path: true
 
-      - name: 🛠️ Build for Linux
-        if: matrix.platform == 'linux'
+      - name: Build
         run: |
-          cd xmrig
-          mkdir -p build && cd build
-          cmake .. -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
-          mv xmrig ../../xmrig-linux
-
-      - name: 🪟 Build for Windows
-        if: matrix.platform == 'windows'
-        run: |
-          cd xmrig
-          mkdir -p build && cd build
-          cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=../scripts/cmake/x86_64-w64-mingw32.toolchain.cmake \
-            -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
-          mv xmrig.exe ../../xmrig-windows.exe
-
-      - name: 🤖 Build for Android
-        if: matrix.platform == 'android'
-        run: |
-          cd xmrig
-          mkdir -p build && cd build
+          mkdir -p xmrig/build && cd xmrig/build
           cmake .. \
             -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=arm64-v8a \
             -DANDROID_PLATFORM=android-21 \
+            -DWITH_HWLOC=OFF \
             -DCMAKE_BUILD_TYPE=Release
-          make -j$(nproc)
-          mv xmrig ../../xmrig-android
+          cmake --build . --parallel
 
-      - name: 🚀 Upload to GitHub Releases
-        uses: softprops/action-gh-release@v2
+      - name: Upload Android Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: xmrig-android
+          path: xmrig/build/xmrig
+
+  release:
+    name: Upload Release
+    runs-on: ubuntu-latest
+    needs: [build-linux, build-windows, build-android]
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Rename Binaries
+        run: |
+          mkdir release
+          cp artifacts/xmrig-linux/xmrig release/xmrig-linux
+          cp artifacts/xmrig-windows/xmrig.exe release/xmrig-windows.exe
+          cp artifacts/xmrig-android/xmrig release/xmrig-android
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
         with:
           files: |
-            xmrig-linux
-            xmrig-windows.exe
-            xmrig-android
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+            release/xmrig-linux
+            release/xmrig-windows.exe
+            release/xmrig-android
