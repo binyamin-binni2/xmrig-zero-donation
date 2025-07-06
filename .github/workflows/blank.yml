@@ -14,24 +14,36 @@ jobs:
 
     steps:
     - name: Checkout repo
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
-    - name: Install dependencies (common)
+    - name: Install dependencies
       run: |
         sudo apt update
         sudo apt install -y \
           build-essential cmake automake libtool pkg-config \
-          git wget zip unzip curl \
+          git wget zip unzip curl ninja-build \
           libssl-dev libhwloc-dev libuv1-dev \
-          mingw-w64 \
-          ninja-build \
-          android-sdk cmake make
+          mingw-w64 llvm clang ndk-build \
+          binutils
 
-    - name: Set up Android NDK
+    - name: Download Android NDK r27c
       if: matrix.target == 'android'
       run: |
-        echo "y" | sudo ${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager "ndk;27.2.12479018"
-        echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.2.12479018" >> $GITHUB_ENV
+        wget https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+        unzip -q android-ndk-r27c-linux.zip
+        echo "ANDROID_NDK_HOME=$PWD/android-ndk-r27c" >> $GITHUB_ENV
+
+    - name: Prepare libuv from Termux (Android only)
+      if: matrix.target == 'android'
+      run: |
+        mkdir -p termux-libuv
+        cd termux-libuv
+        wget https://packages.termux.dev/apt/termux-main/pool/main/libu/libuv/libuv_1.51.0_aarch64.deb
+        ar x libuv_1.51.0_aarch64.deb
+        tar -xf data.tar.xz
+        mkdir -p ../libuv/include
+        cp -r ./data/data/com.termux/files/usr/include/* ../libuv/include/
+        cp ./data/data/com.termux/files/usr/lib/libuv.a ../libuv/libuv.a
 
     - name: Clone XMRig
       run: |
@@ -39,26 +51,26 @@ jobs:
         cd xmrig
         git submodule update --init --recursive
 
-    # ---------- Linux ----------
+    # ---------------- Linux ----------------
     - name: Build XMRig (Linux)
       if: matrix.target == 'linux'
       run: |
         mkdir -p xmrig/build && cd xmrig/build
         cmake .. -DCMAKE_BUILD_TYPE=Release -DWITH_HWLOC=ON
-        cmake --build .
+        cmake --build . --parallel
         strip xmrig || true
         tar -czvf ../../xmrig-linux.tar.gz xmrig
 
-    # ---------- Windows ----------
+    # ---------------- Windows ----------------
     - name: Build libuv for Windows
       if: matrix.target == 'windows'
       run: |
         git clone https://github.com/libuv/libuv.git
         cd libuv
         sh autogen.sh
-        mkdir -p build && cd build
+        mkdir build && cd build
         ../configure --host=x86_64-w64-mingw32 --disable-shared
-        make
+        make -j$(nproc)
 
     - name: Build XMRig (Windows)
       if: matrix.target == 'windows'
@@ -72,24 +84,11 @@ jobs:
           -DUV_INCLUDE_DIR=../../libuv/include \
           -DUV_LIBRARY=../../libuv/build/.libs/libuv.a \
           -DWITH_HWLOC=OFF
-        cmake --build .
+        cmake --build . --parallel
         x86_64-w64-mingw32-strip xmrig.exe || true
         zip -j ../../xmrig-windows.zip xmrig.exe
 
-    # ---------- Android ----------
-    - name: Build libuv for Android
-      if: matrix.target == 'android'
-      run: |
-        git clone https://github.com/libuv/libuv.git
-        cd libuv
-        mkdir -p build-android && cd build-android
-        cmake .. \
-          -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
-          -DANDROID_ABI=arm64-v8a \
-          -DANDROID_PLATFORM=android-24 \
-          -DCMAKE_BUILD_TYPE=Release
-        cmake --build .
-
+    # ---------------- Android ----------------
     - name: Build XMRig (Android)
       if: matrix.target == 'android'
       run: |
@@ -100,18 +99,19 @@ jobs:
           -DANDROID_PLATFORM=android-24 \
           -DCMAKE_BUILD_TYPE=Release \
           -DUV_INCLUDE_DIR=../../libuv/include \
-          -DUV_LIBRARY=../../libuv/build-android/libuv.a \
+          -DUV_LIBRARY=../../libuv/libuv.a \
           -DWITH_HWLOC=OFF
-        cmake --build .
+        cmake --build . --parallel
         tar -czvf ../../xmrig-android.tar.gz xmrig
 
-    # ---------- Upload Release ----------
-    - name: Upload Release
-      uses: softprops/action-gh-release@v1
+    # ---------------- Upload All Artifacts ----------------
+    - name: Upload Release Artifacts
+      if: ${{ always() }}
+      uses: softprops/action-gh-release@v2
       with:
         files: |
           xmrig-linux.tar.gz
           xmrig-windows.zip
           xmrig-android.tar.gz
       env:
-        GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
