@@ -23,7 +23,7 @@ jobs:
           build-essential cmake automake libtool pkg-config \
           git wget zip unzip curl ninja-build \
           libssl-dev libhwloc-dev libuv1-dev \
-          mingw-w64 llvm clang ndk-build \
+          mingw-w64 llvm clang \
           binutils
 
     - name: Download Android NDK r27c
