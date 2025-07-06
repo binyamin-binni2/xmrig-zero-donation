@@ -1,0 +1,79 @@
+name: Build XMRig + Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        platform: [linux, windows, android]
+
+    steps:
+      - name: 📦 Clone Official XMRig
+        run: |
+          git clone --depth=1 https://github.com/xmrig/xmrig.git
+          cd xmrig
+          echo "// 🔧 You can modify source here if needed"
+          # Example: change donation address or patch code
+          # sed -i 's/donate.v2.xmrig.com/your.donation.pool/' src/net/strategies/DonateStrategy.cpp
+
+      - name: 🔧 Install Dependencies
+        if: matrix.platform != 'android'
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential cmake libssl-dev libuv1-dev mingw-w64
+
+      - name: 📱 Set Up Android NDK
+        if: matrix.platform == 'android'
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+
+      - name: 🛠️ Build for Linux
+        if: matrix.platform == 'linux'
+        run: |
+          cd xmrig
+          mkdir -p build && cd build
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          mv xmrig ../../xmrig-linux
+
+      - name: 🪟 Build for Windows
+        if: matrix.platform == 'windows'
+        run: |
+          cd xmrig
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=../scripts/cmake/x86_64-w64-mingw32.toolchain.cmake \
+            -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          mv xmrig.exe ../../xmrig-windows.exe
+
+      - name: 🤖 Build for Android
+        if: matrix.platform == 'android'
+        run: |
+          cd xmrig
+          mkdir -p build && cd build
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-21 \
+            -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          mv xmrig ../../xmrig-android
+
+      - name: 🚀 Upload to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            xmrig-linux
+            xmrig-windows.exe
+            xmrig-android
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
